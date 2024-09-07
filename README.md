@@ -74,7 +74,9 @@ luckfox_pico_rtsp_yolov5        | RV1106        | buildroot | sc3336
 
 
 ## Note
-Before running the demo, execute `RkLunch-stop.sh` to disable the default background app `rkicp` running on luckfox-pico, which occupies the camera.
++ Before running the demo, execute `RkLunch-stop.sh` to disable the default background app `rkicp` running on luckfox-pico, which occupies the camera.
++ Due to the limited system resources of the RV1103, please reduce the video capture resolution if it does not run properly.
+
 
 ## Detail
 [RKMPI Instance User Guide](https://wiki.luckfox.com/Luckfox-Pico/Luckfox-Pico-RV1106/Luckfox-Pico-Ultra-W/Luckfox-Pico-GPIO/RKMPI-example)

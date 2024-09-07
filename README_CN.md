@@ -72,7 +72,7 @@ luckfox_pico_rtsp_yolov5        | RV1106         | buildroot | sc3336
 + 使用 VLC 打开网络串流 `rtsp://172.32.0.93/live/0`（按实际情况修改 IP 地址拉取图像）
 
 ## 注意
-在运行demo前请执行 `RkLunch-stop.sh` 关闭 Luckofox Pico 开机默认开启的后台程序 `rkicp` ,解除对摄像头的占用。
++ 在运行demo前请执行 `RkLunch-stop.sh` 关闭 Luckofox Pico 开机默认开启的后台程序 `rkicp` ,解除对摄像头的占用。
 + RV1103 的系统资源较少，无法正常运行时请降低视频捕获的分辨率。
 
 ## 详细
