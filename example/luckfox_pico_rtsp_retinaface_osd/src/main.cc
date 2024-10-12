@@ -166,6 +166,7 @@ static void *GetMediaBuffer(void *arg) {
 }
 
 int main(int argc, char *argv[]) {
+  system("RkLunch-stop.sh");
 	RK_S32 s32Ret = RK_FAILURE;
 	RK_U32 u32Width    = 720;
 	RK_U32 u32Height   = 480;

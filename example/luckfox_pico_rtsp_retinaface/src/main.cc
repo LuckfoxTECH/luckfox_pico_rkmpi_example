@@ -172,6 +172,7 @@ int test_vpss_init(int VpssChn, int width, int height) {
 
 
 int main(int argc, char *argv[]) {
+  system("RkLunch-stop.sh");
 	RK_S32 s32Ret = 0; 
 
 	float scale_x = 1.125;  // 720 / 640
