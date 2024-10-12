@@ -21,6 +21,7 @@
 #include <opencv2/imgproc/imgproc.hpp>
 
 int main(int argc, char *argv[]) {
+  system("RkLunch-stop.sh");
 	RK_S32 s32Ret = 0; 
 
 	int sX,sY,eX,eY;

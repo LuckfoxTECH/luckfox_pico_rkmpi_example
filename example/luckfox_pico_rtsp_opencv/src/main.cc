@@ -36,6 +36,7 @@
 #define DISP_HEIGHT 1080
 
 int main(int argc, char *argv[]) {
+  system("RkLunch-stop.sh");
 	RK_S32 s32Ret = 0; 
 
 	int width    = DISP_WIDTH;
