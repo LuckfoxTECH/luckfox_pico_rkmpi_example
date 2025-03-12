@@ -97,6 +97,7 @@ int accept_client(int server_fd) {
         printf("Client connected to socket\n");
     }
     
+	
     return client_fd;
 }
 
