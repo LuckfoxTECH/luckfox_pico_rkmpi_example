@@ -4,8 +4,8 @@
 * | Info        :
 *
 *----------------
-* | This version:   V1.0
-* | Date        :   2024-04-07
+* | This version:   V2.0
+* | Date        :   2024-08-26
 * | Info        :   Basic version
 *
 ******************************************************************************/
@@ -24,6 +24,10 @@
 #include <time.h>
 #include <unistd.h>
 #include <vector>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <netinet/in.h>
 
 #include "rtsp_demo.h"
 #include "luckfox_mpi.h"
@@ -32,13 +36,88 @@
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 
+#define DISP_WIDTH  1920
+#define DISP_HEIGHT 1080
+
+// Unix socket path
+#define SOCKET_PATH "/tmp/h264_stream.sock"
+
+// Socket globals
+int server_socket = -1;
+int client_socket = -1;
+
+// Initialize Unix socket server
+int init_unix_socket() {
+    struct sockaddr_un addr;
+    int fd;
+
+    // Remove socket if it already exists
+    unlink(SOCKET_PATH);
+    
+    // Create socket
+    if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+        perror("socket error");
+        return -1;
+    }
+
+    // Set up socket address
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path)-1);
+
+    // Bind socket
+    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
+        perror("bind error");
+        close(fd);
+        return -1;
+    }
+
+    // Listen for connections
+    if (listen(fd, 5) == -1) {
+        perror("listen error");
+        close(fd);
+        return -1;
+    }
+
+    printf("Unix socket initialized at %s\n", SOCKET_PATH);
+    return fd;
+}
+
+// Accept client connection (non-blocking)
+int accept_client(int server_fd) {
+    struct sockaddr_un client_addr;
+    socklen_t client_len = sizeof(client_addr);
+    
+    // Set socket to non-blocking
+    int flags = fcntl(server_fd, F_GETFL, 0);
+    fcntl(server_fd, F_SETFL, flags | O_NONBLOCK);
+    
+    int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
+    if (client_fd > 0) {
+        printf("Client connected to socket\n");
+    }
+    
+    return client_fd;
+}
+
+// Write H264 data to socket
+void write_to_socket(int socket_fd, uint8_t* data, size_t size) {
+    if (socket_fd <= 0) return;
+    
+    // Simple header with size information (4 bytes)
+    uint32_t frame_size = size;
+    write(socket_fd, &frame_size, sizeof(frame_size));
+    
+    // Write the actual frame data
+    write(socket_fd, data, size);
+}
+
 int main(int argc, char *argv[]) {
   system("RkLunch-stop.sh");
-  RK_S32 s32Ret = 0; 
+	RK_S32 s32Ret = 0; 
 
-	int sX,sY,eX,eY;
-	int width    = 2304;
-    int height   = 1296;
+	int width    = DISP_WIDTH;
+    int height   = DISP_HEIGHT;
 
 	char fps_text[16];
 	float fps = 0;
@@ -47,8 +126,34 @@ int main(int argc, char *argv[]) {
 	//h264_frame	
 	VENC_STREAM_S stFrame;	
 	stFrame.pstPack = (VENC_PACK_S *)malloc(sizeof(VENC_PACK_S));
- 	VIDEO_FRAME_INFO_S h264_frame;
- 	VIDEO_FRAME_INFO_S stVpssFrame;
+	RK_U64 H264_PTS = 0;
+	RK_U32 H264_TimeRef = 0; 
+	VIDEO_FRAME_INFO_S stViFrame;
+	
+	// Create Pool
+	MB_POOL_CONFIG_S PoolCfg;
+	memset(&PoolCfg, 0, sizeof(MB_POOL_CONFIG_S));
+	PoolCfg.u64MBSize = width * height * 3 ;
+	PoolCfg.u32MBCnt = 1;
+	PoolCfg.enAllocType = MB_ALLOC_TYPE_DMA;
+	//PoolCfg.bPreAlloc = RK_FALSE;
+	MB_POOL src_Pool = RK_MPI_MB_CreatePool(&PoolCfg);
+	printf("Create Pool success !\n");	
+
+	// Get MB from Pool 
+	MB_BLK src_Blk = RK_MPI_MB_GetMB(src_Pool, width * height * 3, RK_TRUE);
+	
+	// Build h264_frame
+	VIDEO_FRAME_INFO_S h264_frame;
+	h264_frame.stVFrame.u32Width = width;
+	h264_frame.stVFrame.u32Height = height;
+	h264_frame.stVFrame.u32VirWidth = width;
+	h264_frame.stVFrame.u32VirHeight = height;
+	h264_frame.stVFrame.enPixelFormat =  RK_FMT_RGB888; 
+	h264_frame.stVFrame.u32FrameFlag = 160;
+	h264_frame.stVFrame.pMbBlk = src_Blk;
+	unsigned char *data = (unsigned char *)RK_MPI_MB_Handle2VirAddr(src_Blk);
+	cv::Mat frame(cv::Size(width,height),CV_8UC3,data);
 
 	// rkaiq init
 	RK_BOOL multi_sensor = RK_FALSE;	
@@ -64,82 +169,78 @@ int main(int argc, char *argv[]) {
 		return -1;
 	}
 
-	// rtsp init	
-	rtsp_demo_handle g_rtsplive = NULL;
-	rtsp_session_handle g_rtsp_session;
-	g_rtsplive = create_rtsp_demo(554);
-	g_rtsp_session = rtsp_new_session(g_rtsplive, "/live/0");
-	rtsp_set_video(g_rtsp_session, RTSP_CODEC_ID_VIDEO_H264, NULL, 0);
-	rtsp_sync_video_ts(g_rtsp_session, rtsp_get_reltime(), rtsp_get_ntptime());
+	// Replace RTSP init with Unix socket init
+    server_socket = init_unix_socket();
+    if (server_socket < 0) {
+        printf("Failed to initialize Unix socket\n");
+        return -1;
+    }
 
 	// vi init
 	vi_dev_init();
 	vi_chn_init(0, width, height);
 
-	// vpss init
-	vpss_init(0, width, height);
-
-	// bind vi to vpss
-	MPP_CHN_S stSrcChn, stvpssChn;
-	stSrcChn.enModId = RK_ID_VI;
-	stSrcChn.s32DevId = 0;
-	stSrcChn.s32ChnId = 0;
-
-	stvpssChn.enModId = RK_ID_VPSS;
-	stvpssChn.s32DevId = 0;
-	stvpssChn.s32ChnId = 0;
-	printf("====RK_MPI_SYS_Bind vi0 to vpss0====\n");
-	s32Ret = RK_MPI_SYS_Bind(&stSrcChn, &stvpssChn);
-	if (s32Ret != RK_SUCCESS) {
-		RK_LOGE("bind 0 ch venc failed");
-		return -1;
-	}
-
 	// venc init
 	RK_CODEC_ID_E enCodecType = RK_VIDEO_ID_AVC;
 	venc_init(0, width, height, enCodecType);
 	
-	while(1)
-	{	
-		
-
-		// get vpss frame
-		s32Ret = RK_MPI_VPSS_GetChnFrame(0,0, &stVpssFrame,-1);
+	printf("init success\n");	
+	
+	while(1) {			
+		 // Accept client connections if none exists
+        if (client_socket <= 0) {
+            client_socket = accept_client(server_socket);
+        }
+        
+		// get vi frame
+		h264_frame.stVFrame.u32TimeRef = H264_TimeRef++;
+		h264_frame.stVFrame.u64PTS = TEST_COMM_GetNowUs(); 
+		s32Ret = RK_MPI_VI_GetChnFrame(0, 0, &stViFrame, -1);
 		if(s32Ret == RK_SUCCESS)
 		{
-			void *data = RK_MPI_MB_Handle2VirAddr(stVpssFrame.stVFrame.pMbBlk);
+			void *vi_data = RK_MPI_MB_Handle2VirAddr(stViFrame.stVFrame.pMbBlk);
 
-			cv::Mat frame(height,width,CV_8UC3, data);	
+			cv::Mat yuv420sp(height + height / 2, width, CV_8UC1, vi_data);
+			cv::Mat bgr(height, width, CV_8UC3, data);			
+			cv::cvtColor(yuv420sp, bgr, cv::COLOR_YUV420sp2BGR);
+			cv::resize(bgr, frame, cv::Size(width ,height), 0, 0, cv::INTER_LINEAR);
+			
 			sprintf(fps_text,"fps = %.2f",fps);		
             cv::putText(frame,fps_text,
 							cv::Point(40, 40),
 							cv::FONT_HERSHEY_SIMPLEX,1,
 							cv::Scalar(0,255,0),2);
-			memcpy(data, frame.data, width * height * 3);					
+			
 		}
-
-
-		// send stream
+		memcpy(data, frame.data, width * height * 3);
+		
 		// encode H264	
-		RK_MPI_VENC_SendFrame(0, &stVpssFrame,-1);
-		// rtsp
-		s32Ret = RK_MPI_VENC_GetStream(0, &stFrame, -1);
-		if(s32Ret == RK_SUCCESS)
-		{
-			if(g_rtsplive && g_rtsp_session)
-			{
-				//printf("len = %d PTS = %d \n",stFrame.pstPack->u32Len, stFrame.pstPack->u64PTS);	
-				void *pData = RK_MPI_MB_Handle2VirAddr(stFrame.pstPack->pMbBlk);
-				rtsp_tx_video(g_rtsp_session, (uint8_t *)pData, stFrame.pstPack->u32Len,
-							  stFrame.pstPack->u64PTS);
-				rtsp_do_event(g_rtsplive);
-			}
-			RK_U64 nowUs = TEST_COMM_GetNowUs();
-			fps = (float) 1000000 / (float)(nowUs - stVpssFrame.stVFrame.u64PTS);			
-		}
+		RK_MPI_VENC_SendFrame(0,  &h264_frame ,-1);
+	
+		 // Get H264 stream
+        s32Ret = RK_MPI_VENC_GetStream(0, &stFrame, -1);  
+        if(s32Ret == RK_SUCCESS) {
+            // Write H264 data to socket if client is connected
+            if(client_socket > 0) {
+                void *pData = RK_MPI_MB_Handle2VirAddr(stFrame.pstPack->pMbBlk);
+                write_to_socket(client_socket, (uint8_t *)pData, stFrame.pstPack->u32Len);
+                
+                // Check if client is still connected
+                if (write(client_socket, NULL, 0) < 0) {
+                    if (errno == EPIPE || errno == ECONNRESET) {
+                        printf("Client disconnected\n");
+                        close(client_socket);
+                        client_socket = -1;
+                    }
+                }
+            }
+            
+            RK_U64 nowUs = TEST_COMM_GetNowUs();
+            fps = (float) 1000000 / (float)(nowUs - h264_frame.stVFrame.u64PTS);           
+        }
 
 		// release frame 
-		s32Ret = RK_MPI_VPSS_ReleaseChnFrame(0, 0, &stVpssFrame);
+		s32Ret = RK_MPI_VI_ReleaseChnFrame(0, 0, &stViFrame);
 		if (s32Ret != RK_SUCCESS) {
 			RK_LOGE("RK_MPI_VI_ReleaseChnFrame fail %x", s32Ret);
 		}
@@ -147,18 +248,24 @@ int main(int argc, char *argv[]) {
 		if (s32Ret != RK_SUCCESS) {
 			RK_LOGE("RK_MPI_VENC_ReleaseStream fail %x", s32Ret);
 		}
-
+	
 	}
 
+	// Clean up socket
+    if (client_socket > 0)
+        close(client_socket);
+    if (server_socket > 0)
+        close(server_socket);
+    unlink(SOCKET_PATH);
 
-	RK_MPI_SYS_UnBind(&stSrcChn, &stvpssChn);
-	
+	// Destory MB
+	RK_MPI_MB_ReleaseMB(src_Blk);
+	// Destory Pool
+	RK_MPI_MB_DestroyPool(src_Pool);
+
 	RK_MPI_VI_DisableChn(0, 0);
 	RK_MPI_VI_DisableDev(0);
-	
-	RK_MPI_VPSS_StopGrp(0);
-	RK_MPI_VPSS_DestroyGrp(0);
-	
+		
 	SAMPLE_COMM_ISP_Stop(0);
 
 	RK_MPI_VENC_StopRecvFrame(0);
