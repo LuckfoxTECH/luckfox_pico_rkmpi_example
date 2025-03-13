@@ -143,7 +143,7 @@ int venc_init(int chnId, int width, int height, RK_CODEC_ID_E enType) {
 	stAttr.stVencAttr.enType = enType;
 	//stAttr.stVencAttr.enPixelFormat = RK_FMT_YUV420SP;
 	stAttr.stVencAttr.enPixelFormat = RK_FMT_RGB888;	
-	stAttr.stVencAttr.u32Profile = H264E_PROFILE_MAIN;
+	stAttr.stVencAttr.u32Profile = H264E_PROFILE_BASELINE;
 	stAttr.stVencAttr.u32PicWidth = width;
 	stAttr.stVencAttr.u32PicHeight = height;
 	stAttr.stVencAttr.u32VirWidth = width;
