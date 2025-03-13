@@ -45,6 +45,9 @@
 // Socket globals
 int client_socket = -1;
 
+// Add a status flag to track socket connection state
+bool socket_connected = false;
+
 // Connect to Unix socket server using SOCK_SEQPACKET
 int connect_to_unix_socket() {
     struct sockaddr_un addr;
@@ -69,6 +72,7 @@ int connect_to_unix_socket() {
     }
 
     printf("Connected to Unix socket at %s using SOCK_SEQPACKET mode\n", SOCKET_PATH);
+    socket_connected = true;
     return fd;
 }
 
@@ -97,9 +101,8 @@ bool read_from_socket(int socket_fd, uint8_t* buffer, size_t* size, int timeout_
         return false;
     }
     
-    // First read the frame size
-    uint32_t frame_size;
-    ssize_t bytes_read = recv(socket_fd, &frame_size, sizeof(frame_size), MSG_WAITALL);
+    // Read directly into the buffer up to the maximum size
+    ssize_t bytes_read = recv(socket_fd, buffer, *size, 0);
     if (bytes_read <= 0) {
         if (bytes_read == 0) {
             printf("Socket closed by server\n");
@@ -109,28 +112,30 @@ bool read_from_socket(int socket_fd, uint8_t* buffer, size_t* size, int timeout_
         return false;
     }
     
-    // Check if the buffer is large enough
-    if (frame_size > *size) {
-        printf("Buffer too small for frame (need %u bytes, have %zu)\n", frame_size, *size);
+    // Update the size to reflect actual bytes read
+    *size = bytes_read;
+    return true;
+}
+
+// Send H264 frame over socket with proper error handling - only raw data
+bool send_h264_frame(int socket_fd, void* data, uint32_t size) {
+    if (socket_fd <= 0 || !data || size == 0) {
         return false;
     }
     
-    // Now read the actual frame data
-    bytes_read = recv(socket_fd, buffer, frame_size, MSG_WAITALL);
-    if (bytes_read != frame_size) {
-        if (bytes_read <= 0) {
-            if (bytes_read == 0) {
-                printf("Socket closed by server\n");
-            } else {
-                perror("read error");
-            }
-        } else {
-            printf("Incomplete frame read (%zd of %u bytes)\n", bytes_read, frame_size);
-        }
+    // Send the raw H264 data directly without sending the frame size first
+    ssize_t bytes_sent = send(socket_fd, data, size, MSG_NOSIGNAL);
+    if (bytes_sent <= 0) {
+        perror("Failed to send H264 data");
+        socket_connected = false;
+        return false;
+    } else if (bytes_sent != size) {
+        printf("Warning: Incomplete frame sent (%zd of %u bytes)\n", bytes_sent, size);
         return false;
     }
     
-    *size = frame_size;
+    // Successfully sent the complete frame
+    // printf("Sent raw H264 frame: %u bytes\n", size);
     return true;
 }
 
@@ -197,6 +202,7 @@ int main(int argc, char *argv[]) {
     if (client_socket < 0) {
         printf("Failed to connect to Unix socket server. Make sure the server is running.\n");
         printf("Continuing without connection. Will retry later...\n");
+        socket_connected = false;
     }
 
     // vi init
@@ -212,9 +218,11 @@ int main(int argc, char *argv[]) {
     while(1) {            
         // Try to reconnect if not connected
         if (client_socket <= 0) {
+            printf("Socket disconnected, attempting to reconnect...\n");
             client_socket = connect_to_unix_socket();
             if (client_socket > 0) {
-                printf("Successfully connected to socket server\n");
+                printf("Successfully reconnected to socket server\n");
+                socket_connected = true;
             } else {
                 // Add small delay to avoid hammering the CPU with connection attempts
                 usleep(1000000); // 1 second
@@ -249,22 +257,24 @@ int main(int argc, char *argv[]) {
         // Get H264 stream
         s32Ret = RK_MPI_VENC_GetStream(0, &stFrame, -1);  
         if(s32Ret == RK_SUCCESS) {
-            // Process H264 data from socket if connected
+            // Send H264 data to socket if connected
             if (client_socket > 0) {
                 void *pData = RK_MPI_MB_Handle2VirAddr(stFrame.pstPack->pMbBlk);
-                size_t size = stFrame.pstPack->u32Len;
+                uint32_t frame_size = stFrame.pstPack->u32Len;
                 
-                // Attempt to read from socket with 100ms timeout
-                uint8_t buffer[1024*1024]; // 1MB buffer for incoming data
-                size_t buffer_size = sizeof(buffer);
-                if (read_from_socket(client_socket, buffer, &buffer_size, 100)) {
-                    printf("Received %zu bytes from server\n", buffer_size);
-                    // Process received data if needed...
+                if (!send_h264_frame(client_socket, pData, frame_size)) {
+                    printf("Failed to send H264 frame. Closing socket.\n");
+                    close(client_socket);
+                    client_socket = -1;
+                    socket_connected = false;
                 }
+     
             }
             
             RK_U64 nowUs = TEST_COMM_GetNowUs();
             fps = (float) 1000000 / (float)(nowUs - h264_frame.stVFrame.u64PTS);
+            
+           
         }
 
         // release frame 
@@ -298,9 +308,7 @@ int main(int argc, char *argv[]) {
 
     free(stFrame.pstPack);
 
-    if (g_rtsplive)
-        rtsp_del_demo(g_rtsplive);
-    
+ 
     RK_MPI_SYS_Exit();
 
     return 0;
